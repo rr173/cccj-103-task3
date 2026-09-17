@@ -3,6 +3,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 COPY common.py ./
+COPY ed25519.py ./
+COPY notary_tree.py ./
 COPY coordinator/ ./coordinator/
 COPY services/ ./services/
 COPY tests/ ./tests/

@@ -138,6 +138,25 @@ CREATE TABLE IF NOT EXISTS policy_migration_events(
   type TEXT NOT NULL,
   detail TEXT
 );
+-- 第三方公证：稳定事实编号 + 落盘待发箱（outbox）。
+-- 主流程产出事实时先在本地事务内落盘（绝不依赖公证端在线），再由后台
+-- 发布器异步投递；confirmed 记录公证端返回的固定叶子位置与树头。
+CREATE TABLE IF NOT EXISTS notary_outbox(
+  fact_id TEXT PRIMARY KEY,            -- 稳定事实编号（重放只回原位置）
+  kind TEXT NOT NULL,                  -- credential/block/rules
+  body TEXT NOT NULL,                  -- 确定性规范正文（叶子哈希输入）
+  body_hash TEXT NOT NULL,
+  ref_type TEXT,                       -- request/migration（来源定位）
+  ref_id TEXT,                         -- request_id 或 migration_id
+  status TEXT NOT NULL,                -- PENDING/CONFIRMED/CONFLICT
+  leaf_index INTEGER,                  -- 公证账簿固定位置（确认后回填）
+  tree_size INTEGER,                   -- 确认时树规模
+  tree_head TEXT,                      -- 确认时已签名树头 JSON
+  conflict TEXT,                       -- 同号异文诊断
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  confirmed_at INTEGER
+);
 -- 计划项当前绑定的修订号（不可变快照见 policy_bindings；项级版本用于乐观并发）。
 """
 
@@ -360,3 +379,38 @@ class Store:
                 pass
             out.append(d)
         return out
+
+    # -- 第三方公证：待发箱 -----------------------------------------------
+    def get_outbox(self, fact_id: str) -> dict | None:
+        r = self.conn.execute("SELECT * FROM notary_outbox WHERE fact_id=?",
+                              (fact_id,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        d["body"] = json.loads(d["body"])
+        return d
+
+    def list_outbox_by_ref(self, ref_type: str, ref_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT fact_id,kind,ref_type,ref_id,status,leaf_index,tree_size,"
+            " body,conflict,attempts,created_at,confirmed_at FROM notary_outbox"
+            " WHERE ref_type=? AND ref_id=? ORDER BY created_at",
+            (ref_type, ref_id)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["body"] = json.loads(d["body"])
+            except Exception:
+                pass
+            out.append(d)
+        return out
+
+    def outbox_status_view(self, ref_type: str, ref_id: str) -> list[dict]:
+        """对外只读的公开状态：未入树事实只能显示"等待公开"。"""
+        rows = self.conn.execute(
+            "SELECT fact_id,kind,status,leaf_index,tree_size,conflict,"
+            " attempts,created_at,confirmed_at FROM notary_outbox"
+            " WHERE ref_type=? AND ref_id=? ORDER BY created_at",
+            (ref_type, ref_id)).fetchall()
+        return [dict(r) for r in rows]

@@ -20,6 +20,8 @@ services:
       PURGE_SLA_SECONDS: "8"
       REQUEST_TTL_SECONDS: "120"
       POLICY_URL: http://policy:9104
+      NOTARY_URL: http://notary:9105
+      NOTARY_OVERLAP_SECONDS: "300"
       SERVICES_JSON: |
         [
           {"name": "orders",  "base_url": "http://orders:9101"},
@@ -34,6 +36,7 @@ services:
     restart: unless-stopped
     depends_on:
       - policy
+      - notary
     healthcheck:
       test: ["CMD", "python3", "-c",
              "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3).status==200 else 1)"]
@@ -53,6 +56,20 @@ services:
       ADMIN_TOKEN: dev-admin-token
     volumes:
       - policy-data:/data
+
+  # 第三方审计公证节点：仅可追加哈希树账簿（RFC 6962 风格 Merkle 日志）+
+  # Ed25519 签名树头；提供叶片包含路径与前缀一致性路径；密钥换代声明入树，
+  # 旧树头与旧包含路径永久可验。审计器只经网络取证，不接触其内部存储。
+  notary:
+    image: deletion-coordinator:local
+    command: ["python3", "-m", "services.notary_service"]
+    environment:
+      NOTARY_PORT: "9105"
+      NOTARY_DB: /data/notary.db
+      ADMIN_TOKEN: dev-admin-token
+      NOTARY_OVERLAP_SECONDS: "300"
+    volumes:
+      - notary-data:/data
 
   orders:
     image: deletion-coordinator:local
@@ -108,6 +125,8 @@ services:
         condition: service_healthy
       policy:
         condition: service_started
+      notary:
+        condition: service_started
       orders:
         condition: service_started
       billing:
@@ -120,6 +139,7 @@ services:
       BILLING_URL: http://billing:9101
       PROFILE_URL: http://profile:9101
       POLICY_URL: http://policy:9104
+      NOTARY_URL: http://notary:9105
       INTERNAL_TOKEN: dev-internal-token
       ADMIN_TOKEN: dev-admin-token
       DELETION_SIGNING_SECRET: dev-deletion-secret
@@ -130,6 +150,7 @@ services:
 volumes:
   coord-data:
   policy-data:
+  notary-data:
   orders-data:
   billing-data:
   profile-data:

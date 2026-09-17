@@ -77,7 +77,28 @@ def _request_view(rid: str) -> dict | None:
              "created_at": iso(c["created_at"])}
             for c in req["certificates"]
         ],
+        # 第三方公证公开状态：CONFIRMED=已入树（带叶子位置/树规模），
+        # PENDING=尚未入树，只显示"等待公开"（公证端可能暂不可达）。
+        "notary_publications": _publication_view(rid),
     }
+
+
+def _publication_view(rid: str) -> list[dict]:
+    """某工作流事实的公证公开状态（不暴露内部存储，仅公开状态/位置）。"""
+    out = []
+    for row in store.outbox_status_view("request", rid):
+        out.append({
+            "fact_id": row["fact_id"], "kind": row["kind"],
+            "public": row["status"] == "CONFIRMED",
+            "status": row["status"],
+            # 未入树凭据只能显示"等待公开"，绝不给出伪造的树位置
+            "leaf_index": row["leaf_index"],
+            "tree_size": row["tree_size"],
+            "published_at": iso(row["confirmed_at"]) if row["confirmed_at"] else None,
+            "waiting": row["status"] == "PENDING",
+            "conflict": json.loads(row["conflict"]) if row["conflict"] else None,
+        })
+    return out
 
 
 def _raw_view(req: dict) -> dict:
@@ -163,6 +184,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not req0:
                     return self._json(404, {"error": "not found"})
                 return self._json(200, _raw_view(req0))
+            if len(parts) == 3 and parts[:2] == ["admin", "notary"]:
+                if not self._auth(ADMIN_TOKEN):
+                    return self._json(401, {"error": "unauthorized"})
+                rows = store.conn.execute(
+                    "SELECT fact_id,kind,ref_type,ref_id,status,leaf_index,"
+                    " tree_size,attempts,created_at,confirmed_at,conflict"
+                    " FROM notary_outbox ORDER BY created_at, fact_id").fetchall()
+                return self._json(200, {"outbox": [dict(r) for r in rows]})
             return self._json(404, {"error": "not found", "path": p})
         except Exception as e:
             return self._json(500, {"error": repr(e)})
@@ -208,6 +237,23 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._auth(ADMIN_TOKEN):
                     return self._json(401, {"error": "unauthorized"})
                 return self._policy_action(parts[2])
+            # -- 后续撤销：撤销声明追加入公证账簿（不改写历史凭据） --------
+            if len(parts) == 4 and parts[:2] == ["admin", "requests"] \
+                    and parts[3] == "revoke":
+                if not self._auth(ADMIN_TOKEN):
+                    return self._json(401, {"error": "unauthorized"})
+                body = self._body()
+                try:
+                    out = engine.publish_revocation(parts[2],
+                                                    body.get("reason"))
+                except KeyError:
+                    return self._json(404, {"error": "not found"})
+                return self._json(202, out)
+            # -- 第三方公证：待发箱观测 / 落确认前崩溃注入 ----------------
+            if len(parts) == 3 and parts[:2] == ["admin", "notary"]:
+                if not self._auth(ADMIN_TOKEN):
+                    return self._json(401, {"error": "unauthorized"})
+                return self._notary_action(parts[2], self._body())
             return self._json(404, {"error": "not found", "path": p})
         except Exception as e:
             return self._json(500, {"error": repr(e)})
@@ -257,6 +303,35 @@ class Handler(BaseHTTPRequestHandler):
             engine.set_migration_crash_after(n)
             return self._json(200, {"ok": True, "crash_after": n,
                                     "persistent": False})
+        return self._json(404, {"error": "not found"})
+
+    def _notary_action(self, action: str, body: dict):
+        if action == "outbox":
+            rows = store.conn.execute(
+                "SELECT fact_id,kind,ref_type,ref_id,status,leaf_index,"
+                " tree_size,attempts,created_at,confirmed_at,conflict"
+                " FROM notary_outbox ORDER BY created_at, fact_id").fetchall()
+            return self._json(200, {"outbox": [dict(r) for r in rows]})
+        if action == "drain":
+            # 管理触发：立即推进一轮投递（测试/排障用；后台线程本就在做）。
+            return self._json(200, engine.notary.drain_once())
+        if action == "crash-after":
+            # 在"已发送、确认未落盘"窗口杀死进程（仅进程内存）。
+            n = int(body.get("after", 1))
+            engine.notary.set_crash_after(n)
+            return self._json(200, {"ok": True, "crash_before_ack": n,
+                                    "persistent": False})
+        if action == "rotate-key":
+            # 代理运营侧的公证签名密钥换代：换代声明自身在公证端入树。
+            from coordinator import notary_client
+            try:
+                out = notary_client.rotate(
+                    body.get("note"), body.get("overlap_seconds"))
+                return self._json(200, out)
+            except notary_client.NotaryError as e:
+                return self._json(e.status or 502,
+                                  {"error": "notary unavailable",
+                                   "detail": e.body})
         return self._json(404, {"error": "not found"})
 
     def _verify(self, rid: str):

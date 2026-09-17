@@ -15,6 +15,7 @@ export GLOBAL_TOMBSTONE_SECRET="dev-tombstone-secret"
 export RESTRICT_SLA_SECONDS=8 PURGE_SLA_SECONDS=8 REQUEST_TTL_SECONDS=120
 export CALLBACK_BASE="http://127.0.0.1:8080"
 export POLICY_URL="http://127.0.0.1:9104"
+export NOTARY_URL="http://127.0.0.1:9105"
 export COORDINATOR_DB="$DATA_DIR/coordinator.db"
 export DATA_DIR
 
@@ -36,7 +37,7 @@ start_service() { # name port db extra-env
 }
 
 # 确保没有占用端口的旧实例（容器内首次运行是空操作）
-for port in 8080 9101 9102 9103 9104; do
+for port in 8080 9101 9102 9103 9104 9105; do
   pid=$(python3 - "$port" <<'PY'
 import sys, socket
 port = int(sys.argv[1])
@@ -63,6 +64,11 @@ POLICY_DB="$DATA_DIR/policy.db" python3 -u -m services.policy_service \
   >"$DATA_DIR/policy.log" 2>&1 &
 PIDS+=($!)
 
+# 第三方审计公证节点（notary：append-only 哈希树账簿 + 签名树头）
+NOTARY_DB="$DATA_DIR/notary.db" NOTARY_PORT=9105 \
+  python3 -u -m services.notary_service >"$DATA_DIR/notary.log" 2>&1 &
+PIDS+=($!)
+
 start_service orders 9101 orders.db
 HOLD_RECORDS="inv-1" HOLD_CODE="LEGAL_HOLD" \
 HOLD_REASON="legal/financial retention" HOLD_SECONDS=6 \
@@ -77,6 +83,7 @@ export COORD_URL="http://127.0.0.1:8080"
 export ORDERS_URL="http://127.0.0.1:9101"
 export BILLING_URL="http://127.0.0.1:9102"
 export PROFILE_URL="http://127.0.0.1:9103"
+export NOTARY_URL="http://127.0.0.1:9105"
 # POLICY_URL 已在脚本顶部导出（:9104），verifier 直接继承。
 
 PYTHONUNBUFFERED=1 python3 -m tests.verifier

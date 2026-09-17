@@ -30,6 +30,7 @@ ORDERS = os.environ.get("ORDERS_URL", "http://127.0.0.1:9101")
 BILLING = os.environ.get("BILLING_URL", "http://127.0.0.1:9102")
 PROFILE = os.environ.get("PROFILE_URL", "http://127.0.0.1:9103")
 POLICY = os.environ.get("POLICY_URL", "http://127.0.0.1:9104")
+NOTARY = os.environ.get("NOTARY_URL", "http://127.0.0.1:9105")
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "dev-internal-token")
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "dev-admin-token")
 SECRET = os.environ.get("DELETION_SIGNING_SECRET", "dev-deletion-secret").encode()
@@ -448,6 +449,7 @@ def scenario_c():
 def main():
     print("等待服务就绪 ...")
     for url, name in ((COORD, "coordinator"), (POLICY, "policy"),
+                      (NOTARY, "notary"),
                       (ORDERS, "orders"), (BILLING, "billing"),
                       (PROFILE, "profile")):
         if not wait_for(url, name):
@@ -456,6 +458,7 @@ def main():
 
     # 健康检查
     for url, name in ((COORD, "coordinator"), (POLICY, "policy"),
+                      (NOTARY, "notary"),
                       (ORDERS, "orders"), (BILLING, "billing"),
                       (PROFILE, "profile")):
         s, b = req("GET", f"{url}/health")
@@ -470,10 +473,16 @@ def main():
     scenario_b()
     scenario_c()
 
-    # 版本化合规策略控制平面验收场景 D~H（policy/coordinator/mock backends/
+    # 版本化合规策略控制平面验收场景 D~I（policy/coordinator/mock backends/
     # 外部独立验证方共同参与）
     from tests import policy_scenarios
     policy_scenarios.run_policy_scenarios(check)
+
+    # 第三方审计公证节点场景 J~P（append-only 哈希树账簿 / 包含与前缀一致性 /
+    # 稳定事实编号与落盘待发箱 / 断网积压 / 回执逆序与崩溃补齐 /
+    # 签名密钥换代信任链 / 离线审计器 / 撤销后历史可复核）
+    from tests import notary_scenarios
+    notary_scenarios.run_notary_scenarios(check)
 
     print("\n================ 验证结果 ================")
     print(f"通过 {len(PASSES)} 项，失败 {len(FAILURES)} 项")

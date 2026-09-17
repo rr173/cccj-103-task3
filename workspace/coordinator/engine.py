@@ -23,6 +23,7 @@ import time
 import uuid
 
 from . import http_client, policy_client
+from .notary_publisher import NotaryPublisher
 from .store import SEALED_LIKE, STATUS_RANK, TERMINAL, Store
 from common import (
     evidence_leaf,
@@ -81,6 +82,9 @@ class Engine:
         # 重启的进程默认为 0（不持久化），从而从持久检查点恢复完成迁移。
         # 经 POST /admin/policy/crash-after 在运行时武装（仅进程内存）。
         self._crash_after = 0
+        # 第三方公证发布器：凭据/阻断标记/规则批次 -> append-only 哈希树账簿。
+        # 公证端故障只让事实停在待发箱（"等待公开"），绝不阻塞主流程。
+        self.notary = NotaryPublisher(store)
         self.thread: threading.Thread | None = None
 
     def set_migration_crash_after(self, n: int):
@@ -90,9 +94,11 @@ class Engine:
     def start(self):
         self.thread = threading.Thread(target=self._run, name="engine", daemon=True)
         self.thread.start()
+        self.notary.start()
 
     def stop(self):
         self._stop.set()
+        self.notary.stop()
 
     def _run(self):
         while not self._stop.is_set():
@@ -566,6 +572,41 @@ class Engine:
                 self.store.event(rid, "REQUEST_CONFIRMED", {
                     "note": "删除已对外确认；全局墓碑生效，迟到副本将被拦截"})
             self.store.commit()
+        # 第三方公证：签发凭据事实写入落盘待发箱（稳定事实编号）。
+        # 公证端失联不阻塞确认主流程；入树前对外状态为"等待公开"。
+        cert_fact_id = f"fact-cred-{rid}-v{version}"
+        cred_body = {
+            "kind": "credential",
+            "fact_id": cert_fact_id,
+            "request_id": rid,
+            "subject_id": req["subject_id"],
+            "version": version,
+            "merkle_root": root,
+            "certificate_signature": signature,
+            "issued_at": ts,
+            "item_count": len(leaves),
+            "sealed_count": sealed,
+        }
+        self.notary.enqueue(cert_fact_id, "credential", cred_body,
+                            "request", rid)
+        # 全域阻断标记（墓碑）同样公开：任何迟到副本据此判定主体已删除。
+        block_fact_id = f"fact-block-{rid}-v{version}"
+        block_body = {
+            "kind": "block",
+            "fact_id": block_fact_id,
+            "request_id": rid,
+            "subject_id": req["subject_id"],
+            "tombstone_token": token,
+            "version": version,
+            "blocked_at": ts,
+        }
+        self.notary.enqueue(block_fact_id, "block", block_body, "request", rid)
+        self.store.event(rid, "NOTARY_FACTS_QUEUED", {
+            "credential_fact_id": cert_fact_id,
+            "block_fact_id": block_fact_id,
+            "note": "事实已入落盘待发箱；入树前仅显示等待公开"})
+        with self.store.lock:
+            self.store.commit()
         # 墓碑推送到各服务（失败下轮继续推；服务自身擦除时也已写本地墓碑）
         self._push_tombstones(rid, req["subject_id"], token, version)
 
@@ -802,6 +843,39 @@ class Engine:
                 "UPDATE requests SET status=?, updated_at=? WHERE id=?",
                 (status, now_ms(), rid))
             self.store.commit()
+
+    def publish_revocation(self, rid: str, reason: str) -> dict:
+        """后续撤销动作：撤销事实写入公证账簿（append-only）。
+
+        撤销不删除/改写此前已公开的凭据、叶子与旧树头——历史凭据仍可凭
+        旧树头永久复核；撤销只是追加一片新事实，声明该凭据的当前效力状态。
+        """
+        req = self.store.get_request(rid)
+        if not req:
+            raise KeyError(rid)
+        fact_id = f"fact-revoke-{rid}-{now_ms()}"
+        # 撤销指向该工作流最近一版已签发凭据（若有）。
+        certs = self.store.list_certificates(rid)
+        last_version = certs[-1]["version"] if certs else 0
+        body = {
+            "kind": "revocation",
+            "fact_id": fact_id,
+            "request_id": rid,
+            "subject_id": req["subject_id"],
+            "revoked_certificate_version": last_version,
+            "reason": reason or "administrative revocation",
+            "revoked_at": now_ms(),
+        }
+        # 撤销类叶子以独立 revocation 类型公开（声明性事实，追加不覆盖历史）。
+        self.notary.enqueue(fact_id, "revocation", body, "request", rid)
+        with self.store.lock:
+            self.store.event(rid, "REVOCATION_PUBLISHED", {
+                "fact_id": fact_id,
+                "revoked_certificate_version": last_version,
+                "note": "撤销已追加公开；历史凭据与旧树头不被改写"})
+            self.store.commit()
+        return {"fact_id": fact_id, "request_id": rid,
+                "revoked_certificate_version": last_version}
 
     # =====================================================================
     # 合规策略控制平面：不可变修订绑定 / 干跑 / 幂等可恢复迁移 / 回滚
@@ -1355,6 +1429,25 @@ class Engine:
         self.store.migration_event(mid, "MIGRATION_COMPLETED", {
             "revision": target, "requests": affected})
         self.store.commit()
+        # 第三方公证：规则生效批次作为一类事实公开（稳定事实编号）。
+        # 仅在实际改变了条目时入队；SKIP/无动作迁移不产生批次事实。
+        applied_items = [mi for mi in self.store.list_migration_items(mid)
+                         if mi["state"] == "DONE"]
+        if applied_items:
+            fact_id = f"fact-rules-{mid}"
+            body = {
+                "kind": "rules",
+                "fact_id": fact_id,
+                "migration_id": mid,
+                "revision": target,
+                "mode": mig["mode"],
+                "applied_count": len(applied_items),
+                "requests": affected,
+                "items": [{"item_id": mi["item_id"], "action": mi["action"]}
+                          for mi in applied_items],
+                "effective_at": now_ms(),
+            }
+            self.notary.enqueue(fact_id, "rules", body, "migration", mid)
 
 
 class PolicyApplyError(Exception):
