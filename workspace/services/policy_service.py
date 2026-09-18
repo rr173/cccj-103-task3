@@ -285,6 +285,11 @@ def list_events() -> list[dict]:
     return out
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"{SERVICE_NAME}/1.0"
 
@@ -393,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     ensure_baseline()
-    httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    httpd = _Server(("0.0.0.0", PORT), Handler)
     print(f"[policy] compliance policy control plane listening on :{PORT}"
           f" db={DB_PATH}")
     httpd.serve_forever()

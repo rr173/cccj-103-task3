@@ -478,6 +478,11 @@ def _mint_tombstone_token(request_id: str, subject_id: str) -> str:
     return f"tomb:{hmac_hex(GLOBAL_TOMBSTONE_SECRET, body)}"
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"Service-{SERVICE_NAME}/1.0"
 
@@ -724,7 +729,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
-    httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    httpd = _Server(("0.0.0.0", PORT), Handler)
     print(f"[{SERVICE_NAME}] listening on :{PORT} db={DB_PATH}"
           f" holds={sorted(HOLD_RECORDS) or 'none'}")
     httpd.serve_forever()

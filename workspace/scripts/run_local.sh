@@ -15,6 +15,7 @@ export GLOBAL_TOMBSTONE_SECRET="dev-tombstone-secret"
 export RESTRICT_SLA_SECONDS=8 PURGE_SLA_SECONDS=8 REQUEST_TTL_SECONDS=120
 export CALLBACK_BASE="http://127.0.0.1:8080"
 export POLICY_URL="http://127.0.0.1:9104"
+export NOTARY_URL="http://127.0.0.1:9105"
 export COORDINATOR_DB="$DATA_DIR/coordinator.db"
 export DATA_DIR
 
@@ -36,7 +37,7 @@ start_service() { # name port db extra-env
 }
 
 # 确保没有占用端口的旧实例（容器内首次运行是空操作）
-for port in 8080 9101 9102 9103 9104; do
+for port in 8080 9101 9102 9103 9104 9105; do
   pid=$(python3 - "$port" <<'PY'
 import sys, socket
 port = int(sys.argv[1])
@@ -61,6 +62,12 @@ rm -f "$DATA_DIR"/*.db "$DATA_DIR"/*.db-wal "$DATA_DIR"/*.db-shm "$DATA_DIR"/*.l
 # 策略控制平面（policy component）
 POLICY_DB="$DATA_DIR/policy.db" python3 -u -m services.policy_service \
   >"$DATA_DIR/policy.log" 2>&1 &
+PIDS+=($!)
+
+# 第三方审计公证节点（append-only 哈希树 + 树头签名 + 包含/一致性路径）
+NOTARY_DB="$DATA_DIR/notary.db" NOTARY_PORT=9105 \
+  NOTARY_OVERLAP_SECONDS="${NOTARY_OVERLAP_SECONDS:-300}" \
+  python3 -u -m services.notary_service >"$DATA_DIR/notary.log" 2>&1 &
 PIDS+=($!)
 
 start_service orders 9101 orders.db

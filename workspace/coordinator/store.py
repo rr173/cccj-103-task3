@@ -138,6 +138,27 @@ CREATE TABLE IF NOT EXISTS policy_migration_events(
   type TEXT NOT NULL,
   detail TEXT
 );
+-- 第三方审计公证的落盘待发箱（durable outbox）。
+-- 主流程在同一本地事务内把"已发生的事实"写入待发箱即视为完成；
+-- 后台投递线程以稳定事实编号幂等发往公证节点，公证故障绝不阻塞主流程。
+-- PENDING -> SENT（已入树，附位置/树头）；CONFLICT（同编号异正文，诊断保留）。
+CREATE TABLE IF NOT EXISTS notary_outbox(
+  fact_id TEXT PRIMARY KEY,           -- 稳定事实编号（确定性、跨重放不变）
+  fact_type TEXT NOT NULL,            -- CERTIFICATE/GLOBAL_TOMBSTONE/RULE_BATCH/...
+  ref_id TEXT NOT NULL,               -- 关联对象（request_id / migration_id）
+  encoded TEXT NOT NULL,              -- 确定性编码字节（hex）；叶子唯一输入
+  leaf_hash TEXT,                     -- 公证端返回的叶子哈希
+  tree_seq INTEGER,                   -- 入树位置（0-based）
+  tree_size INTEGER,                  -- 入树后的树规模
+  tree_head TEXT,                     -- 入树时树头摘要 JSON
+  state TEXT NOT NULL DEFAULT 'PENDING', -- PENDING/SENT/CONFLICT
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notary_outbox_state
+  ON notary_outbox(state);
 -- 计划项当前绑定的修订号（不可变快照见 policy_bindings；项级版本用于乐观并发）。
 """
 
@@ -360,3 +381,72 @@ class Store:
                 pass
             out.append(d)
         return out
+
+    # -- 第三方审计公证：落盘待发箱 ----------------------------------------
+    def enqueue_fact(self, fact_id: str, fact_type: str, ref_id: str,
+                     encoded_hex: str):
+        """登记一条待公开事实（调用方须已在写事务/锁内，末尾统一提交）。
+
+        幂等：同 fact_id 已存在则保留原行（不覆盖正文、不改状态）。
+        """
+        ts = now_ms()
+        self.conn.execute(
+            "INSERT INTO notary_outbox(fact_id, fact_type, ref_id, encoded,"
+            " state, created_at, updated_at) VALUES(?,?,?,?, 'PENDING', ?, ?)"
+            " ON CONFLICT(fact_id) DO NOTHING",
+            (fact_id, fact_type, ref_id, encoded_hex, ts, ts))
+
+    def fact_state(self, fact_id: str) -> dict | None:
+        r = self.conn.execute(
+            "SELECT * FROM notary_outbox WHERE fact_id=?",
+            (fact_id,)).fetchone()
+        return dict(r) if r else None
+
+    def list_outbox(self, state: str | None = None,
+                    ref_id: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM notary_outbox WHERE 1=1"
+        args: list = []
+        if state:
+            sql += " AND state=?"; args.append(state)
+        if ref_id:
+            sql += " AND ref_id=?"; args.append(ref_id)
+        sql += " ORDER BY rowid"
+        return [dict(r) for r in self.conn.execute(sql, args).fetchall()]
+
+    def pending_facts(self, limit: int = 16) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM notary_outbox WHERE state='PENDING'"
+            " ORDER BY rowid LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_fact_sent(self, fact_id: str, leaf_hash: str, seq: int,
+                       tree_size: int, tree_head: dict):
+        ts = now_ms()
+        self.conn.execute(
+            "UPDATE notary_outbox SET state='SENT', leaf_hash=?, tree_seq=?,"
+            " tree_size=?, tree_head=?, last_error=NULL, updated_at=?"
+            " WHERE fact_id=?",
+            (leaf_hash, seq, tree_size,
+             json.dumps(tree_head, ensure_ascii=False, sort_keys=True),
+             ts, fact_id))
+
+    def mark_fact_attempt(self, fact_id: str, error: str):
+        self.conn.execute(
+            "UPDATE notary_outbox SET attempts=attempts+1, last_error=?,"
+            " updated_at=? WHERE fact_id=?",
+            (error, now_ms(), fact_id))
+
+    def mark_fact_conflict(self, fact_id: str, detail: dict):
+        self.conn.execute(
+            "UPDATE notary_outbox SET state='CONFLICT', last_error=?,"
+            " updated_at=? WHERE fact_id=?",
+            (json.dumps(detail, ensure_ascii=False, sort_keys=True),
+             now_ms(), fact_id))
+
+    def count_outbox(self, state: str | None = None) -> int:
+        if state:
+            return self.conn.execute(
+                "SELECT COUNT(*) c FROM notary_outbox WHERE state=?",
+                (state,)).fetchone()["c"]
+        return self.conn.execute(
+            "SELECT COUNT(*) c FROM notary_outbox").fetchone()["c"]

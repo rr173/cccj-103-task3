@@ -17,8 +17,20 @@ fiscal-retention 规则；**每个工作流在创建时绑定一个不可变的�
 两个修订之下；**PURGED、ABORTED（FAILED/补偿）、外部认证（EXTERNAL）封存
 的历史永不被改写**，回滚保留历史证书、墓碑与独立密码学可验证性。
 
+在这之上增设**第三方审计公证节点（notary）**：主程序每当产出**签发凭据、
+全域阻断标记或规则生效批次**，就把确定性编码后的事实送入一棵**仅可追加的
+哈希树账簿**；公证节点为树头做**RSA 非对称签名**，并提供**叶片包含路径**与
+**前缀一致性路径**——审计者不接触任何内部存储即可确认某项事实确已公开、
+任意两个树头没有分叉。发送侧使用**稳定事实编号 + 落盘待发箱**：相同编号
+重投只返回原位置，相同编号携带不同正文给出诊断冲突；公证端失联、确认逆序
+或任一进程重启后都从断点补齐，**每项恰好入树一次**；公证故障不卡住主流程，
+尚未入树的凭据只显示"等待公开"。**签名密钥可换代**，换代声明自身也写入
+账簿，新旧公钥仅在配置的交叠窗口共同受信，窗口结束后新树头只带新密钥标识，
+旧树头与旧包含路径永久可验。
+
 **零第三方依赖**：仅使用 Python 3.11 标准库（`http.server` / `sqlite3` /
-`hashlib` / `hmac` / `urllib`），容器内无需 `pip install`，开箱即可通过启动验证。
+`hashlib` / `hmac` / `urllib`；非对称签名为标准库原语实现的 RSA
+PKCS#1 v1.5 + SHA-256），容器内无需 `pip install`，开箱即可通过启动验证。
 
 ---
 
@@ -42,6 +54,10 @@ fiscal-retention 规则；**每个工作流在创建时绑定一个不可变的�
 | 幂等可恢复迁移 | 修订应用登记为迁移（确定性迁移 id），逐条目 CAS 推进并把检查点 `last_item_id/done` 落库；重放同一请求返回既有登记、无新事件无版本跳动；崩溃重启后引擎凭检查点续跑 |
 | 竞争回调与终态保护 | 每条目带 `policy_version`（CAS）与绑定 `policy_revision`（修订围栏）；迁移后迟到的旧 PURGED 回调（修订不符或 SEALED→PURGE）被 409 拒绝，收敛为唯一终态、唯一证书 |
 | 历史不可改写 | PURGED/FAILED、ABORTED 工作流、EXTERNAL 外部认证封存、LOCAL 固定保留均被迁移跳过；回滚只解除 POLICY 来源保留；证书叶子含 `policy_revision` 与完整规范字段，历史证书/墓碑在续跑与回滚后仍可独立复验 |
+| 第三方审计公证 | **notary** 节点维护仅可追加哈希树；签发凭据/全域阻断标记/规则生效批次确定性编码后入树；树头 RSA 签名，提供叶片包含路径与前缀一致性路径；离线审计器仅经公开端点即可证明"事实已公开、树头无分叉"，并拒绝删叶/换叶/截短/伪造旁支 |
+| 稳定编号 + 落盘待发箱 | 协调端以确定性 fact_id 把事实写入本地待发箱即完成主流程；后台线程幂等投递。同编号重投返回原位置（树不增长），同编号异正文 409 诊断冲突（根不变） |
+| 故障不阻塞 / 断点补齐 | 公证端失联、确认逆序、发送方在落确认前后崩溃，均从持久待发箱补齐；待发箱积压而主流程照常 CONFIRMED，连通后每项**恰好入树一次**；尚未入树显示 `WAITING_PUBLICATION` |
+| 可追溯签名换代 | 换代声明自身作为叶子入树并由旧钥签名；交叠窗口内树头旧/新双钥共同受信，窗口结束后新树头只带新密钥标识；旧树头与旧包含路径凭固化签名永久可验，审计器从 genesis 公钥链式信任 |
 
 ---
 
@@ -51,19 +67,27 @@ fiscal-retention 规则；**每个工作流在创建时绑定一个不可变的�
                  ┌────────────────────────────────────────────┐
    用户删除申请  │                coordinator :8080            │
  ─────────────▶│  engine tick loop (状态机/退避/轮询/补偿/     │
- POST /requests │   策略迁移恢复)                              │
+ POST /requests │   策略迁移恢复) + notary 落盘待发箱后台投递   │
                 │  SQLite: requests/items/reports/events/      │
                 │   tombstones/certificates/                   │
                 │   policy_bindings/policy_migrations(检查点)  │
-                └───┬───────────┬───────────┬───────┬─────────┘
-            /internal/*    /internal/*    /internal/*  policies/*
-            (Bearer 内部令牌)                          (draft/canary/activate/rollback)
-                ▼               ▼               ▼          ▼
-          orders:9101     billing:9102     profile:9103  policy:9104
-          记录/命令幂等    含法律保留 inv-1  记录/副本检疫  版本化不可变修订
-                └───────────────┴───────────────┴──────────┘
-                         verifier 容器：黑盒 e2e + 独立密码学复验
-              （场景 A~C 既有能力回归 + 场景 D~I 策略控制平面验收）
+                │   notary_outbox(稳定编号待发箱)              │
+                └───┬───────────┬───────────┬───────┬────┬─────┘
+            /internal/*    /internal/*    /internal/*  │ 公证提交(幂等)
+            (Bearer 内部令牌)                          ▼
+                ▼               ▼               ▼     │  ┌──────────────────────┐
+          orders:9101     billing:9102     profile   │  │  notary 公证节点:9105 │
+          记录/命令幂等    含法律保留 inv-1  记录/副本 │  │  仅可追加哈希树账簿    │
+                                                      │  │  树头 RSA 签名         │
+                └───────────────┴───────────────┴──────┘  │  包含/一致性路径       │
+                policies/* (draft/...)    notary/v1/* ───▶│  签名换代(声明入树)    │
+                        ▼                                  └───────────┬──────────┘
+                  policy:9104                                           │ 公开取证(免令牌)
+                  版本化不可变修订                                      ▼
+                                                          离线审计器(verifier 场景 J)
+              verifier 容器：黑盒 e2e + 独立密码学复验
+              （场景 A~C 既有能力回归 + 场景 D~I 策略控制平面 +
+                场景 J 第三方公证：包含/一致性/换代/断网/逆序/崩溃/防伪造）
 ```
 
 ### 计划项状态机
@@ -93,9 +117,10 @@ docker compose run --rm verifier          # 退出码 0 = 全部通过
 
 ```bash
 bash scripts/run_local.sh
-# 期望末尾：通过 110 项，失败 0 项 / 全部通过：容器启动验证成功。
-# 场景 G 会用崩溃注入杀死协调端；scripts/coord_supervisor.sh 自动重启，
-# 重启进程凭持久检查点完成迁移（等价 compose 的 restart: unless-stopped）。
+# 期望末尾：通过 140 项，失败 0 项 / 全部通过：容器启动验证成功。
+# 场景 G 会用崩溃注入杀死协调端，场景 J4b 会在公证确认落盘前杀死协调端；
+# scripts/coord_supervisor.sh 自动重启，重启进程凭持久检查点/待发箱完成续跑
+# （等价 compose 的 restart: unless-stopped）。
 ```
 
 ## 4. 主要 HTTP 接口
@@ -126,6 +151,29 @@ bash scripts/run_local.sh
 | `POST /policies/rollback` | 回滚 ACTIVE（恢复上一修订）或撤回 CANARIED（回退当前 ACTIVE）；幂等 |
 | `GET /policies/resolve?subject_id=`（内部令牌） | 主体绑定快照：金丝雀队列命中 CANARIED，否则 ACTIVE |
 | `GET /policies/revisions[/{r}]` / `/active` / `/events` | 修订清单/详情/当前激活/策略事件审计 |
+
+第三方审计公证节点（notary :9105，取证端点全部公开、无需令牌）：
+
+| 方法/路径 | 说明 |
+|---|---|
+| `GET /notary/v1/get-sth` | 当前签名树头（size/root/timestamp/各签名者签名） |
+| `GET /notary/v1/head-at?tree_size=` | 某历史规模**固化**的签名树头（永久可取可验） |
+| `POST /notary/v1/submit`（内部令牌） | 稳定事实编号幂等追加：同编号同正文返回原位置；异正文 **409 冲突**（根不变）；失联可注入 503 |
+| `GET /notary/v1/get-proof-by-fact?fact_id=&tree_size=` | 叶片包含路径（叶索引/叶哈希/兄弟路径/根） |
+| `GET /notary/v1/get-consistency?first=&second=` | 两个树头规模间的前缀一致性路径 |
+| `GET /notary/v1/get-entry-by-fact` / `get-entries` | 日志条目正文（审计方据此独立复算叶哈希） |
+| `GET /notary/v1/keys` / `/rotations` | genesis 信任锚公钥目录 / 历次换代声明（含旧钥签名） |
+| `POST /admin/rotate-keys`（管理令牌） | 触发签名密钥换代（`overlap_seconds` 交叠窗口）；声明自身入树 |
+| `POST /admin/fault`（管理令牌） | 故障注入：`submit_503`（断网积压）、`stall_first`（回执逆序） |
+
+协调端的公证管理/取证代理（管理令牌）：
+
+| 方法/路径 | 说明 |
+|---|---|
+| `GET/POST /admin/notary/outbox` | 落盘待发箱与计数（PENDING/SENT/CONFLICT）；请求视图含 `notary_publication`（等待公开/已公开） |
+| `POST /admin/notary/drain` | 同步触发一次后台投递 |
+| `POST /admin/notary/rotate` | 代理公证端密钥换代 |
+| `POST /admin/notary/crash-before-ack` | 崩溃注入：指定 fact 在公证确认到达后、本地落 SENT 前退出 |
 
 业务服务（同一镜像）：
 
@@ -165,9 +213,40 @@ command_id, updated_at, policy_revision}` 规范化哈希得到；叶子的完�
 > 内部令牌替换为 mTLS；SQLite 替换为带行锁/事务的数据库；
 > 时间与保留期限由统一时钟/保留策略服务提供。
 
-## 6. 验证场景（verifier 自动断言）
+## 5b. 第三方审计公证（append-only 哈希树 / 树头签名 / 密钥换代）
 
-- **场景 A**：三服务删除；billing 的 `inv-1` 受 `LEGAL_HOLD` 封存（423）→
+三类公开事实（确定性 `canonical` 编码后作为叶子输入）：
+
+| fact_type | 稳定 fact_id | 触发点 |
+|---|---|---|
+| `CERTIFICATE` | `cert:{request_id}:v{version}` | 每次签发凭据 |
+| `GLOBAL_TOMBSTONE` | `tomb:{request_id}:v{version}` | 全域阻断标记 |
+| `RULE_BATCH` | `rules:{migration_id}` | 一次完成的策略迁移（规则生效批次） |
+
+哈希树采用域分隔（叶 `0x00` / 内部 `0x01`）与"严格小于 n 的最大 2 的幂"
+切分（RFC 6962 MTH 风格），不在奇数层复制末端。树头负载：
+
+```json
+{"tree_size": 12, "sha256_root_hash": "…", "timestamp": 1789617000000,
+ "signer_key_ids": ["notary-key-genesis"], "notary_key_id": "notary-key-genesis"}
+```
+
+由公证节点私钥做 RSA PKCS#1 v1.5 / SHA-256 签名（标准库实现）。
+审计方（`tests/offline_auditor.py`，**只能经网络取证**）只凭 genesis
+公钥即可：
+
+1. 用公开条目正文重算叶哈希，按包含路径折叠到某签名树头，证明事实已公开；
+2. 用前缀一致性路径证明任意两个树头无前缀分叉；
+3. 沿"换代声明叶子 + 旧钥对声明的签名"链式验证，引入后续新公钥。
+
+换代语义：`POST /admin/rotate-keys` 生成新 RSA 密钥，换代声明（含新公钥、
+`overlap_end_ms`）本身作为一片叶子入树并由旧钥签名；交叠窗口内固化的树头
+由旧/新双钥共同签名，窗口结束后新树头只带新密钥标识；历史树头在其规模上
+**固化**，旧树头与旧包含路径永久可验。发送侧（协调端）与公证端解耦：
+事实先进本地 `notary_outbox`（与业务事实同事务），后台线程幂等投递，
+公证端任何故障都不阻塞删除主流程。
+
+## 6. 验证场景（verifier 自动断言）- **场景 A**：三服务删除；billing 的 `inv-1` 受 `LEGAL_HOLD` 封存（423）→
   证书 v1（`sealed_count=1`）；伪造/越级/倒序/重复回报全部被正确处理；
   对外确认后各服务迟到副本 410 且不复活、进检疫区；保留解除自动续跑 →
   证书 v2（全部 PURGED）；两版证书独立密码学复验通过。
@@ -196,23 +275,47 @@ command_id, updated_at, policy_revision}` 规范化哈希得到；叶子的完�
 - **场景 I**：RESTRICT 永久失败 → 补偿 → ABORTED 的工作流，在后续封存修订的
   dry-run 与 canary 迁移中完全不出现（FAILED@rev1 与补偿项均不被改写，
   失败服务数据仍可读），且自始至终无证书。
+- **场景 J**：第三方审计公证节点：
+  - **J1** 首组签发凭据与全域阻断标记都能取得有效包含路径（树头签名合法），
+    日志凭据正文与对外证书绑定一致；
+  - **J2** 同一事实重放不增加树规模（返回原位置），同编号篡改正文返回 409
+    诊断冲突且根摘要不变；经主流程抢占规则批次编号被待发箱诊断为 CONFLICT；
+  - **J3** 公证端断网期间待发箱持续积压、主流程照常 CONFIRMED（凭据显示
+    等待公开、树不增长），连通后每项恰好入树一次（树增长数 == 积压数）；
+  - **J4** 回执逆序（首事实被卡、其余先入树后放行）与发送方在落确认前崩溃
+    均最终收敛，重启后幂等补齐、每项恰好入树一次、无重复叶片；
+  - **J5** 换代声明自身入树；窗口内树头旧/新双签、窗口后新头只带新密钥；
+    换代前后树头分别匹配正确公钥、genesis→新钥信任链连续；旧钥撤销及后续
+    事实发生后，先前公开凭据仍可凭旧树头永久复核；
+  - **J6** 两个不同规模的合法树头通过前缀一致性校验；删叶、换叶、截短、
+    伪造旁支（自造一致性路径 / 攻击密钥签名树头）全部被离线审计器拒绝。
 
 ## 7. 目录
 
 ```
-common.py                    证据哈希/Merkle/HMAC/墓碑令牌/策略规则匹配原语
-coordinator/store.py         SQLite 表结构、状态序、策略绑定与迁移检查点账本
+common.py                    证据哈希/Merkle/HMAC/墓碑令牌/策略规则匹配/
+                             append-only 哈希树(包含/一致性路径)/RSA 签名原语
+coordinator/store.py         SQLite 表结构、状态序、策略绑定与迁移检查点账本、
+                             notary_outbox 落盘待发箱
 coordinator/engine.py        编排引擎（解析/两阶段/保留续跑/重试/补偿/证书/墓碑/
-                             不可变修订绑定/dry-run/幂等可恢复迁移/回滚）
+                             不可变修订绑定/dry-run/幂等可恢复迁移/回滚/公证入箱）
 coordinator/policy_client.py 协调端 → 策略控制平面 HTTP 客户端
+coordinator/notary_client.py 协调端 → 第三方公证节点 HTTP 客户端（幂等/冲突/失联）
+coordinator/notary_publisher.py 稳定事实编码 + 落盘待发箱后台投递（不阻塞/恰好一次/
+                             回执逆序/确认前崩溃续投）
 coordinator/http_client.py   出站 HTTP（urllib）
-coordinator/app.py           协调端 HTTP API（含 /admin/policy/*）
+coordinator/app.py           协调端 HTTP API（含 /admin/policy/* 与 /admin/notary/*）
 services/policy_service.py   版本化合规策略控制平面（draft/canary/activate/rollback）
+services/notary_service.py   第三方审计公证节点（仅可追加哈希树/树头 RSA 签名/
+                             包含与一致性路径/签名密钥换代/固化历史树头）
 services/mock_service.py     多服务通用实现（封存/POLICY·EXTERNAL 来源保留/幂等
                              命令 SEAL·RELEASE_HOLD/墓碑/副本检疫/故障注入）
-tests/verifier.py            独立 e2e 启动验证（场景 A~C 回归，110 项断言）
+tests/verifier.py            独立 e2e 启动验证（场景 A~C 回归）
 tests/policy_scenarios.py    策略控制平面验收（场景 D~I）
-scripts/run_local.sh         无容器一键验证（拉起全部 5 个组件 + verifier）
-scripts/coord_supervisor.sh  协调端监督重启（崩溃注入后续跑迁移）
+tests/notary_scenarios.py    第三方公证验收（场景 J：包含/一致性/换代/断网/逆序/崩溃/防伪造）
+tests/offline_auditor.py     只能经网络取证的离线审计器（树头签名/换代信任链/
+                             包含与前缀一致的独立密码学复算）
+scripts/run_local.sh         无容器一键验证（拉起全部 6 个组件 + verifier）
+scripts/coord_supervisor.sh  协调端监督重启（迁移崩溃与公证确认前崩溃后续跑）
 Dockerfile, docker-compose.yml
 ```

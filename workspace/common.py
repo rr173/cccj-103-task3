@@ -161,6 +161,266 @@ def verify_tombstone_token(request_id: str, subject_id: str, token: str) -> bool
     return hmac.compare_digest(tombstone_token(request_id, subject_id), token or "")
 
 
+# =========================================================================
+# 第三方审计公证：仅可追加哈希树（append-only Merkle tree）原语
+#
+# 域分隔（domain separation）：
+#   叶子域 0x00：tree_leaf(确定性编码后的事实正文)
+#   内部域 0x01：tree_node(左孩子 || 右孩子)
+# 不平衡树不在奇数层复制末端，而按"严格小于 n 的最大 2 的幂"左右切分
+# （RFC 6962 MTH 风格）；包含路径与前缀一致性路径的生产/验证算法已在
+# tests/verifier.py 的离线审计器中从零独立重写并穷举交叉验证。
+# =========================================================================
+def tree_leaf_hash(encoded: bytes) -> str:
+    """事实正文 -> 树叶子哈希（hex）。encoded 必须是确定性编码字节。"""
+    return sha256_hex(b"\x00" + encoded)
+
+
+def tree_node_hash(left: str, right: str) -> str:
+    return sha256_hex(b"\x01" + bytes.fromhex(left) + bytes.fromhex(right))
+
+
+def tree_largest_pow2_below(n: int) -> int:
+    """严格小于 n 的最大 2 的幂（n >= 2）。"""
+    return 1 << ((n - 1).bit_length() - 1)
+
+
+def tree_mth(hashes: list[str]) -> str:
+    """RFC6962 风格的不平衡 Merkle 树根；空树 = sha256(b"")。"""
+    n = len(hashes)
+    if n == 0:
+        return sha256_hex(b"")
+    if n == 1:
+        return hashes[0]
+    k = tree_largest_pow2_below(n)
+    return tree_node_hash(tree_mth(hashes[:k]), tree_mth(hashes[k:]))
+
+
+def tree_inclusion_path(hashes: list[str], index: int,
+                        a: int = 0, b: int | None = None) -> list[str]:
+    """叶子 index（全局）在 hashes[a:b] 子树中的包含路径（兄弟节点序列）。"""
+    if b is None:
+        b = len(hashes)
+    n = b - a
+    if n <= 1:
+        return []
+    k = tree_largest_pow2_below(n)
+    if index - a < k:
+        path = tree_inclusion_path(hashes, index, a, a + k)
+        path.append(tree_mth(hashes[a + k:b]))
+        return path
+    path = tree_inclusion_path(hashes, index, a + k, b)
+    path.append(tree_mth(hashes[a:a + k]))
+    return path
+
+
+def tree_verify_inclusion(index: int, size: int, leaf_hash: str,
+                          path: list[str], root: str) -> bool:
+    """仅用叶子哈希/路径/根独立验证包含关系（消费顺序与路径长度严格校验）。"""
+    if size <= 0 or not 0 <= index < size:
+        return False
+    pos = [0]
+
+    def fold(i: int, sub: int):
+        if sub == 1:
+            return leaf_hash
+        k = tree_largest_pow2_below(sub)
+        if i < k:
+            left = fold(i, k)
+            sib = path[pos[0]]; pos[0] += 1
+            return tree_node_hash(left, sib)
+        right = fold(i - k, sub - k)
+        sib = path[pos[0]]; pos[0] += 1
+        return tree_node_hash(sib, right)
+
+    try:
+        computed = fold(index, size)
+    except IndexError:
+        return False
+    return pos[0] == len(path) and computed == root
+
+
+def tree_consistency_path(hashes: list[str], first: int) -> list[str]:
+    """first（旧树规模，1..n）到当前规模 n 的前缀一致性路径。"""
+    n = len(hashes)
+    path: list[str] = []
+
+    def rec(m: int, a: int, b: int, flag: bool):
+        s = b - a
+        if m == s:
+            if flag:
+                path.append(tree_mth(hashes[a:b]))
+            return
+        k = tree_largest_pow2_below(s)
+        if m <= k:
+            rec(m, a, a + k, True)
+            path.append(tree_mth(hashes[a + k:b]))
+        else:
+            rec(m - k, a + k, b, False)
+            path.append(tree_mth(hashes[a:a + k]))
+
+    if first != n:
+        rec(first, 0, n, False)
+    return path
+
+
+def tree_verify_consistency(first: int, size: int, old_root: str,
+                            new_root: str, path: list[str]) -> bool:
+    """独立验证新旧两根前缀一致：旧树恰是新树前 first 个叶子。"""
+    if first <= 0 or size <= 0 or first > size:
+        return False
+    if first == size:
+        return path == [] and old_root == new_root
+    pos = [0]
+
+    def take() -> str | None:
+        if pos[0] >= len(path):
+            return None
+        v = path[pos[0]]; pos[0] += 1
+        return v
+
+    def rec(m: int, s: int):
+        """返回 (旧子树根, 新子树根)；m 为旧前缀在本子树内的叶子数。"""
+        if m == s:
+            h = take()
+            return (None, None) if h is None else (h, h)
+        k = tree_largest_pow2_below(s)
+        if m <= k:
+            old_l, new_l = rec(m, k)
+            right = take()
+            if old_l is None or right is None:
+                return None, None
+            return old_l, tree_node_hash(new_l, right)
+        old_r, new_r = rec(m - k, s - k)
+        left = take()
+        if old_r is None or left is None:
+            return None, None
+        return tree_node_hash(left, old_r), tree_node_hash(left, new_r)
+
+    old, new = rec(first, size)
+    return pos[0] == len(path) and old == old_root and new == new_root
+
+
+# =========================================================================
+# 非对称签名原语（RSA PKCS#1 v1.5 + SHA-256，仅标准库实现）
+#
+# 公证节点为树头/换代声明签名，审计方只持有公钥即可离线验签，
+# 无需与任何内部存储或共享密钥接触。私钥只出现在公证进程内。
+# 私钥 JSON 仅用于本地开发/演示持久化；生产应替换为 KMS/HSM。
+# =========================================================================
+def _i2osp(x: int, length: int) -> bytes:
+    return x.to_bytes(length, "big")
+
+
+def _os2ip(b: bytes) -> int:
+    return int.from_bytes(b, "big")
+
+
+def _is_prime_miller_rabin(n: int, rounds: int = 16) -> bool:
+    if n < 2:
+        return False
+    for small in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
+        if n % small == 0:
+            return n == small
+    d = n - 1
+    s = 0
+    while d % 2 == 0:
+        s += 1
+        d //= 2
+    import secrets
+    for _ in range(rounds):
+        a = secrets.randbelow(n - 3) + 2
+        x = pow(a, d, n)
+        if x in (1, n - 1):
+            continue
+        for _ in range(s - 1):
+            x = x * x % n
+            if x == n - 1:
+                break
+        else:
+            return False
+    return True
+
+
+def rsa_generate_keypair(bits: int = 2048) -> dict:
+    """生成 RSA 密钥对；e 固定为 65537；返回可 JSON 序列化的密钥字典。"""
+    import secrets
+    half = bits // 2
+    e = 65537
+    while True:
+        while True:
+            p = secrets.randbits(half) | (1 << (half - 1)) | 1
+            if _is_prime_miller_rabin(p):
+                break
+        while True:
+            q = secrets.randbits(half) | (1 << (half - 1)) | 1
+            if q != p and _is_prime_miller_rabin(q):
+                break
+        n = p * q
+        if n.bit_length() != bits:
+            continue
+        phi = (p - 1) * (q - 1)
+        try:
+            d = pow(e, -1, phi)
+        except ValueError:
+            continue
+        return {
+            "n": n, "e": e, "d": d, "p": p, "q": q,
+            "dp": d % (p - 1), "dq": d % (q - 1),
+            "qinv": pow(q, -1, p), "bits": bits,
+        }
+
+
+def rsa_public_key(keypair: dict) -> dict:
+    return {"n": keypair["n"], "e": keypair["e"], "bits": keypair.get("bits", 2048)}
+
+
+# PKCS#1 v1.5 EMSA-PKCS1-V1_5 对 SHA-256 的 DER 摘要信息前缀
+_SHA256_DIGESTINFO_PREFIX = bytes.fromhex(
+    "3031300d060960864801650304020105000420")
+
+
+def _rsa_encrypt_exp(msg_int: int, pub: dict) -> int:
+    return pow(msg_int, int(pub["e"]), int(pub["n"]))
+
+
+def _rsa_decrypt_crt(sig_int: int, priv: dict) -> int:
+    p, q = int(priv["p"]), int(priv["q"])
+    m1 = pow(sig_int, int(priv["dp"]), p)
+    m2 = pow(sig_int, int(priv["dq"]), q)
+    h = (int(priv["qinv"]) * (m1 - m2)) % p
+    return m2 + h * q
+
+
+def rsa_sign(message: bytes, priv: dict) -> str:
+    """对字节消息生成 PKCS#1 v1.5 / SHA-256 签名（hex）。"""
+    k = (int(priv["n"]).bit_length() + 7) // 8
+    digest = hashlib.sha256(message).digest()
+    t = _SHA256_DIGESTINFO_PREFIX + digest
+    ps = b"\xff" * (k - len(t) - 3)
+    em = b"\x00\x01" + ps + b"\x00" + t
+    sig_int = _rsa_decrypt_crt(_os2ip(em), priv)
+    return _i2osp(sig_int, k).hex()
+
+
+def rsa_verify(message: bytes, signature_hex: str, pub: dict) -> bool:
+    """用公钥验证 PKCS#1 v1.5 / SHA-256 签名；任何畸形一律返回 False。"""
+    try:
+        k = (int(pub["n"]).bit_length() + 7) // 8
+        sig = bytes.fromhex(signature_hex or "")
+        if len(sig) != k:
+            return False
+        em_int = _rsa_encrypt_exp(_os2ip(sig), pub)
+        em = _i2osp(em_int, k)
+        digest = hashlib.sha256(message).digest()
+        t = _SHA256_DIGESTINFO_PREFIX + digest
+        ps = b"\xff" * (k - len(t) - 3)
+        expected = b"\x00\x01" + ps + b"\x00" + t
+        return hmac.compare_digest(em, expected)
+    except Exception:
+        return False
+
+
 def policy_content_hash(rules: list[dict]) -> str:
     """修订内容指纹：同一 revision 的规则内容不可变（immutable revision）。
 

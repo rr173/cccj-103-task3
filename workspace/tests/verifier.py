@@ -12,6 +12,10 @@
      金丝雀/对照分流、新匹配先封存、撤回续跑、迁移与迟到 PURGED 竞争收敛、
      重放幂等、expected-version 冲突原子不改动、崩溃检查点续跑、
      部分金丝雀回滚保留历史墓碑/证书且外部认证不可改写。
+  J（tests/notary_scenarios.py）：第三方审计公证节点——
+     仅可追加哈希树、叶片包含/前缀一致性路径、树头签名、稳定编号落盘待发箱、
+     断网积压与恰好一次、回执逆序/确认前崩溃收敛、可追溯签名密钥换代、
+     离线审计器拒绝删叶/换叶/截短/伪造旁支。
 退出码：0 全部通过；1 有断言失败。
 """
 from __future__ import annotations
@@ -30,6 +34,7 @@ ORDERS = os.environ.get("ORDERS_URL", "http://127.0.0.1:9101")
 BILLING = os.environ.get("BILLING_URL", "http://127.0.0.1:9102")
 PROFILE = os.environ.get("PROFILE_URL", "http://127.0.0.1:9103")
 POLICY = os.environ.get("POLICY_URL", "http://127.0.0.1:9104")
+NOTARY = os.environ.get("NOTARY_URL", "http://127.0.0.1:9105")
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN", "dev-internal-token")
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "dev-admin-token")
 SECRET = os.environ.get("DELETION_SIGNING_SECRET", "dev-deletion-secret").encode()
@@ -449,7 +454,7 @@ def main():
     print("等待服务就绪 ...")
     for url, name in ((COORD, "coordinator"), (POLICY, "policy"),
                       (ORDERS, "orders"), (BILLING, "billing"),
-                      (PROFILE, "profile")):
+                      (PROFILE, "profile"), (NOTARY, "notary")):
         if not wait_for(url, name):
             print(f"FATAL: {name} 未就绪")
             sys.exit(1)
@@ -457,7 +462,7 @@ def main():
     # 健康检查
     for url, name in ((COORD, "coordinator"), (POLICY, "policy"),
                       (ORDERS, "orders"), (BILLING, "billing"),
-                      (PROFILE, "profile")):
+                      (PROFILE, "profile"), (NOTARY, "notary")):
         s, b = req("GET", f"{url}/health")
         check(f"health {name}", s == 200 and b.get("ok"), str(b))
 
@@ -470,10 +475,14 @@ def main():
     scenario_b()
     scenario_c()
 
-    # 版本化合规策略控制平面验收场景 D~H（policy/coordinator/mock backends/
+    # 版本化合规策略控制平面验收场景 D~I（policy/coordinator/mock backends/
     # 外部独立验证方共同参与）
     from tests import policy_scenarios
     policy_scenarios.run_policy_scenarios(check)
+
+    # 第三方审计公证验收场景 J（notary 公证节点 + 只能经网络取证的离线审计器）
+    from tests import notary_scenarios
+    notary_scenarios.run_notary_scenarios(check)
 
     print("\n================ 验证结果 ================")
     print(f"通过 {len(PASSES)} 项，失败 {len(FAILURES)} 项")

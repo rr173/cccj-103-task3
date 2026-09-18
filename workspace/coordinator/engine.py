@@ -23,6 +23,15 @@ import time
 import uuid
 
 from . import http_client, policy_client
+from .notary_publisher import (
+    NotaryPublisher,
+    cert_fact_id,
+    encode_certificate_fact,
+    encode_rule_batch_fact,
+    encode_tombstone_fact,
+    rule_batch_fact_id,
+    tombstone_fact_id,
+)
 from .store import SEALED_LIKE, STATUS_RANK, TERMINAL, Store
 from common import (
     evidence_leaf,
@@ -81,18 +90,26 @@ class Engine:
         # 重启的进程默认为 0（不持久化），从而从持久检查点恢复完成迁移。
         # 经 POST /admin/policy/crash-after 在运行时武装（仅进程内存）。
         self._crash_after = 0
+        # 第三方审计公证：落盘待发箱 + 后台投递（公证故障不阻塞主流程）
+        self.notary = NotaryPublisher(store)
         self.thread: threading.Thread | None = None
 
     def set_migration_crash_after(self, n: int):
         self._crash_after = max(0, int(n))
 
+    def arm_notary_ack_crash(self, fact_id: str | None):
+        """武装"公证确认落盘前崩溃"注入（仅进程内存，重启不携带）。"""
+        self.notary.arm_crash_before_ack(fact_id)
+
     # -- 生命周期 ----------------------------------------------------------
     def start(self):
         self.thread = threading.Thread(target=self._run, name="engine", daemon=True)
         self.thread.start()
+        self.notary.start()
 
     def stop(self):
         self._stop.set()
+        self.notary.stop()
 
     def _run(self):
         while not self._stop.is_set():
@@ -557,9 +574,26 @@ class Engine:
                     "INSERT OR IGNORE INTO tombstones(request_id, subject_id, service,"
                     " token, version, pushed, created_at) VALUES(?,?,?,?,?,0,?)",
                     (rid, req["subject_id"], item["service"], token, version, ts))
+            # 第三方审计公证：签发凭据 + 全域阻断标记在同一本地事务入待发箱。
+            # 主流程到此即完成；是否已公开（入公证哈希树）由后台投递决定，
+            # 公证故障只让凭据显示"等待公开"，绝不阻塞确认与墓碑生效。
+            cert_row = {
+                "subject_id": req["subject_id"], "version": version,
+                "merkle_root": root, "item_count": len(leaves),
+                "sealed_count": sealed, "issued_at": ts,
+                "signature": signature,
+            }
+            self.store.enqueue_fact(
+                cert_fact_id(rid, version), "CERTIFICATE", rid,
+                encode_certificate_fact(rid, cert_row).hex())
+            self.store.enqueue_fact(
+                tombstone_fact_id(rid, version), "GLOBAL_TOMBSTONE", rid,
+                encode_tombstone_fact(
+                    rid, req["subject_id"], version, token, ts).hex())
             self.store.event(rid, "CERTIFICATE_ISSUED", {
                 "version": version, "merkle_root": root[:16],
-                "sealed_count": sealed})
+                "sealed_count": sealed,
+                "notary": "facts queued for third-party publication"})
             if self.store.get_request(rid)["status"] != "CONFIRMED":
                 self.store.conn.execute(
                     "UPDATE requests SET status='CONFIRMED' WHERE id=?", (rid,))
@@ -1354,6 +1388,20 @@ class Engine:
             (now_ms(), mid))
         self.store.migration_event(mid, "MIGRATION_COMPLETED", {
             "revision": target, "requests": affected})
+        # 第三方审计公证：规则生效批次作为一个事实入待发箱（确定性、可复算）。
+        mig_now = self.store.get_migration(mid)
+        item_results = [
+            {"item_id": mi["item_id"], "request_id": mi["request_id"],
+             "service": mi["service"], "record_id": mi["record_id"],
+             "action": mi["action"], "state": mi["state"]}
+            for mi in self.store.list_migration_items(mid)
+        ]
+        encoded = encode_rule_batch_fact(mig_now, affected, item_results)
+        self.store.enqueue_fact(rule_batch_fact_id(mid), "RULE_BATCH", mid,
+                                encoded.hex())
+        self.store.migration_event(mid, "RULE_BATCH_QUEUED", {
+            "fact_id": rule_batch_fact_id(mid),
+            "items": len(item_results)})
         self.store.commit()
 
 

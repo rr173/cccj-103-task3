@@ -1,0 +1,175 @@
+[notary] genesis key created id=notary-key-genesis bits=2048
+[notary] third-party audit notary listening on :9105 db=/workspace/data/notary.db overlap=300s
+[notary] "GET /health HTTP/1.1" 200 -
+[notary] "GET /health HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "GET /notary/v1/keys HTTP/1.1" 200 -
+[notary] "GET /notary/v1/keys HTTP/1.1" 200 -
+[notary] "GET /notary/v1/rotations HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-entry-by-fact?fact_id=cert:req_cfe08d5487044786:v1 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-proof-by-fact?fact_id=cert:req_cfe08d5487044786:v1 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-entry-by-fact?fact_id=tomb:req_cfe08d5487044786:v1 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-proof-by-fact?fact_id=tomb:req_cfe08d5487044786:v1 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-entry-by-fact?fact_id=cert:req_cfe08d5487044786:v1 HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-entry-by-fact?fact_id=cert:req_263b6e159a85496e:v1 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 409 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 409 -
+[notary] "POST /admin/fault HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "POST /admin/fault HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "POST /admin/fault HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "GET /admin/fault HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 503 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "POST /admin/fault HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 500 -
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 39584)
+Traceback (most recent call last):
+  File "/workspace/services/notary_service.py", line 685, in do_POST
+    return self._json(200, res)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/services/notary_service.py", line 569, in _json
+    self.wfile.write(body)
+  File "/usr/lib/python3.11/socketserver.py", line 834, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/usr/lib/python3.11/socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python3.11/socketserver.py", line 755, in __init__
+    self.handle()
+  File "/usr/lib/python3.11/http/server.py", line 432, in handle
+    self.handle_one_request()
+  File "/usr/lib/python3.11/http/server.py", line 420, in handle_one_request
+    method()
+  File "/workspace/services/notary_service.py", line 718, in do_POST
+    return self._json(500, {"error": repr(e)})
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/services/notary_service.py", line 568, in _json
+    self.end_headers()
+  File "/usr/lib/python3.11/http/server.py", line 534, in end_headers
+    self.flush_headers()
+  File "/usr/lib/python3.11/http/server.py", line 538, in flush_headers
+    self.wfile.write(b"".join(self._headers_buffer))
+  File "/usr/lib/python3.11/socketserver.py", line 834, in write
+    self._sock.sendall(b)
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-entries?start=0&end=45 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=45 HTTP/1.1" 200 -
+[notary] "POST /admin/rotate-keys HTTP/1.1" 200 -
+[notary] "GET /notary/v1/keys HTTP/1.1" 200 -
+[notary] "GET /notary/v1/rotations HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=46 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-proof-by-fact?fact_id=notary:key-rotation:45&tree_size=46 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-entry-by-fact?fact_id=notary:key-rotation:45 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=46 HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=48 HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "POST /notary/v1/submit HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=50 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-entry-by-fact?fact_id=cert:req_1fa87d2c252f46af:v1 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-proof-by-fact?fact_id=cert:req_1fa87d2c252f46af:v1&tree_size=48 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/keys HTTP/1.1" 200 -
+[notary] "GET /notary/v1/rotations HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=46 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-proof-by-fact?fact_id=notary:key-rotation:45&tree_size=46 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-entry-by-fact?fact_id=notary:key-rotation:45 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=48 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-proof-by-fact?fact_id=cert:req_1fa87d2c252f46af:v1&tree_size=48 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=47 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=50 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-consistency?first=47&second=50 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/keys HTTP/1.1" 200 -
+[notary] "GET /notary/v1/rotations HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=46 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-proof-by-fact?fact_id=notary:key-rotation:45&tree_size=46 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-entry-by-fact?fact_id=notary:key-rotation:45 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=47 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/head-at?tree_size=50 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-consistency?first=47&second=50 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-sth HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-entries?start=0&end=50 HTTP/1.1" 200 -
+[notary] "GET /notary/v1/get-proof-by-fact?fact_id=cert:req_b2377e846e384e3b:v2&tree_size=50 HTTP/1.1" 200 -

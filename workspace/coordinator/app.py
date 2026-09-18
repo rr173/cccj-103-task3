@@ -19,6 +19,30 @@ store = Store(DB_PATH)
 engine = Engine(store, load_registry(), CALLBACK_BASE)
 
 
+def _notary_status_for_request(rid: str) -> dict:
+    """该工作流各事实在第三方公证哈希树中的公开状态。"""
+    rows = store.list_outbox(ref_id=rid)
+    facts = []
+    for r in rows:
+        facts.append({
+            "fact_id": r["fact_id"], "fact_type": r["fact_type"],
+            "state": r["state"],  # PENDING=等待公开 / SENT=已公开 / CONFLICT
+            "publication": ("PUBLISHED" if r["state"] == "SENT"
+                            else "CONFLICT" if r["state"] == "CONFLICT"
+                            else "WAITING_PUBLICATION"),
+            "tree_seq": r["tree_seq"], "tree_size": r["tree_size"],
+            "tree_head": json.loads(r["tree_head"]) if r["tree_head"] else None,
+            "leaf_hash": r["leaf_hash"], "attempts": r["attempts"],
+            "last_error": (json.loads(r["last_error"])
+                           if r["state"] == "CONFLICT" and r["last_error"]
+                           else r["last_error"]),
+        })
+    pending = sum(1 for f in facts if f["state"] == "PENDING")
+    return {"facts": facts, "waiting_publication": pending,
+            "all_published": bool(facts) and pending == 0
+            and all(f["state"] == "SENT" for f in facts)}
+
+
 def _item_view(i: dict) -> dict:
     return {
         "service": i["service"],
@@ -77,6 +101,7 @@ def _request_view(rid: str) -> dict | None:
              "created_at": iso(c["created_at"])}
             for c in req["certificates"]
         ],
+        "notary_publication": _notary_status_for_request(rid),
     }
 
 
@@ -108,6 +133,11 @@ def _raw_view(req: dict) -> dict:
              "sealed_count": c["sealed_count"], "created_at": c["created_at"]}
             for c in req["certificates"]],
     }
+
+
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -163,6 +193,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not req0:
                     return self._json(404, {"error": "not found"})
                 return self._json(200, _raw_view(req0))
+            # 第三方审计公证待发箱/取证（管理令牌；公开取证端点在公证节点）
+            if len(parts) >= 2 and parts[:2] == ["admin", "notary"]:
+                if not self._auth(ADMIN_TOKEN):
+                    return self._json(401, {"error": "unauthorized"})
+                return self._notary_action(parts[2:])
             return self._json(404, {"error": "not found", "path": p})
         except Exception as e:
             return self._json(500, {"error": repr(e)})
@@ -208,6 +243,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._auth(ADMIN_TOKEN):
                     return self._json(401, {"error": "unauthorized"})
                 return self._policy_action(parts[2])
+            # -- 第三方审计公证：待发箱 / 取证代理 / 换代 / 崩溃注入 --------
+            if len(parts) >= 2 and parts[:2] == ["admin", "notary"]:
+                if not self._auth(ADMIN_TOKEN):
+                    return self._json(401, {"error": "unauthorized"})
+                return self._notary_action(parts[2:])
             return self._json(404, {"error": "not found", "path": p})
         except Exception as e:
             return self._json(500, {"error": repr(e)})
@@ -259,6 +299,54 @@ class Handler(BaseHTTPRequestHandler):
                                     "persistent": False})
         return self._json(404, {"error": "not found"})
 
+    def _notary_action(self, parts):
+        """协调端对第三方公证的管理/取证代理端点。"""
+        from coordinator import notary_client
+        action = parts[0] if parts else ""
+        if action == "outbox":
+            state = self._body().get("state") if self.command == "POST" else None
+            rows = store.list_outbox(state=state)
+            return self._json(200, {
+                "outbox": [{
+                    "fact_id": r["fact_id"], "fact_type": r["fact_type"],
+                    "ref_id": r["ref_id"], "state": r["state"],
+                    "tree_seq": r["tree_seq"], "tree_size": r["tree_size"],
+                    "tree_head": json.loads(r["tree_head"])
+                    if r["tree_head"] else None,
+                    "leaf_hash": r["leaf_hash"], "attempts": r["attempts"],
+                    "last_error": r["last_error"],
+                } for r in rows],
+                "counts": {"total": store.count_outbox(),
+                           "pending": store.count_outbox("PENDING"),
+                           "sent": store.count_outbox("SENT"),
+                           "conflict": store.count_outbox("CONFLICT")}})
+        if action == "drain":
+            # 同步触发一次投递（测试/验收用）；立即返回，投递仍在后台完成。
+            engine.notary.drain_once()
+            return self._json(200, {"ok": True,
+                                    "pending": store.count_outbox("PENDING")})
+        if action == "crash-before-ack":
+            fid = self._body().get("fact_id")
+            engine.arm_notary_ack_crash(fid)
+            return self._json(200, {"ok": True, "armed_fact_id": fid,
+                                    "persistent": False})
+        if action == "rotate":
+            body = self._body()
+            try:
+                res = notary_client.rotate(body.get("overlap_seconds"))
+            except notary_client.NotaryError as e:
+                return self._json(e.status, {"error": str(e.body)})
+            except notary_client.NotaryUnavailable as e:
+                return self._json(503, {"error": str(e)})
+            return self._json(200, res)
+        if action == "sth":
+            try:
+                sth = notary_client.get_sth()
+            except notary_client.NotaryUnavailable as e:
+                return self._json(503, {"error": str(e)})
+            return self._json(200 if sth else 404, sth or {"error": "empty tree"})
+        return self._json(404, {"error": "not found", "action": action})
+
     def _verify(self, rid: str):
         """独立复算入口（测试用 verifier 不依赖该接口，自行复算）。"""
         from common import evidence_leaf, merkle_root, verify_tombstone_token
@@ -288,7 +376,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     engine.start()
-    httpd = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Handler)
+    httpd = _Server(("0.0.0.0", LISTEN_PORT), Handler)
     print(f"[coord] deletion coordinator listening on :{LISTEN_PORT} db={DB_PATH}")
     try:
         httpd.serve_forever()
